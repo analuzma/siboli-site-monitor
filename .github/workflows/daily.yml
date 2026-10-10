@@ -1,0 +1,22 @@
+name: Daily site check
+
+on:
+  schedule:
+    - cron: "0 14 * * *" # 8:00 AM Mexico City (UTC-6)
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node monitor.mjs
+        env:
+          DISCORD_DIGEST_WEBHOOK: ${{ secrets.DISCORD_DIGEST_WEBHOOK }}
+          DISCORD_ALERTS_WEBHOOK: ${{ secrets.DISCORD_ALERTS_WEBHOOK }}
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}

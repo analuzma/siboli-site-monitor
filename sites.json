@@ -1,0 +1,9 @@
+[
+  { "name": "nosvemos.mx", "url": "https://nosvemos.mx", "posthogProjectId": "403444" },
+  { "name": "siboli.mx", "url": "https://siboli.mx" },
+  { "name": "mayosdenavojoa.com", "url": "https://mayosdenavojoa.com" },
+  { "name": "lamacarena.com", "url": "https://lamacarena.com" },
+  { "name": "analindasboutique.com", "url": "https://analindasboutique.com", "woocommerce": true },
+  { "name": "mayosstore.com", "url": "https://mayosstore.com", "woocommerce": true, "maintenance": true },
+  { "name": "pomoforte.com", "url": "https://pomoforte.com", "posthogProjectId": "528286" }
+]
