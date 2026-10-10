@@ -1,5 +1,5 @@
 // Daily health check. Node 20+, no dependencies.
-// Env: DISCORD_DIGEST_WEBHOOK, DISCORD_ALERTS_WEBHOOK, POSTHOG_API_KEY,POSTHOG_HOST (default https://us.posthog.com)
+// Env: DISCORD_DIGEST_WEBHOOK, DISCORD_ALERTS_WEBHOOK, POSTHOG_API_KEY, POSTHOG_HOST (default https://us.posthog.com), WP_UMBRELLA_API_KEY, HEARTBEAT_URL
 import tls from "node:tls";
 import { readFileSync } from "node:fs";
 
@@ -57,10 +57,98 @@ async function posthogEvents(projectId, apiKey, windowDays) {
   return { last24h, inWindow };
 }
 
+// WP Umbrella public API: backups, pending updates, vulnerabilities for WordPress sites.
+async function umbrellaProject(hostname, key) {
+  for (const headers of [{ authorization: `Bearer ${key}` }, { "x-api-key": key }]) {
+    const res = await fetch(`https://public-api.wp-umbrella.com/projects?search=${encodeURIComponent(hostname)}&per_page=5`, {
+      signal: AbortSignal.timeout(20000),
+      headers,
+    });
+    if (res.status === 401 || res.status === 403) continue;
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    const { projects = [] } = await res.json();
+    return projects.find((p) => p.source_domain === hostname) ?? null;
+  }
+  throw new Error("API rejected the key");
+}
+
+async function checkUmbrella(hostname, problems, notes, extra) {
+  const key = process.env.WP_UMBRELLA_API_KEY;
+  if (!key) return;
+  try {
+    const p = await umbrellaProject(hostname, key);
+    if (!p) return void notes.push("WP Umbrella: site not found");
+    if (p.is_disconnected) notes.push("WP Umbrella is disconnected from the site");
+    const last4 = p.backups?.last_4_status ?? [];
+    const bad = (s) => /fail|error/i.test(s ?? "");
+    if (!p.backups?.active) notes.push("Backups are turned off");
+    else if (last4.length && last4.every(bad)) problems.push(`Backups failing (last ${last4.length} all failed)`);
+    else if (bad(last4[0])) notes.push("Latest backup failed");
+    const updates = (p.plugins ?? []).filter((x) => x.need_update && x.is_active).length;
+    if (updates) extra.push(`${updates} updates`);
+    const v = p.vulnerabilities ?? {};
+    const vulns = (v.plugins?.length ?? 0) + (v.themes?.length ?? 0) + (v.wordpress?.length ?? 0);
+    if (vulns) notes.push(`${vulns} known vulnerabilities (see WP Umbrella)`);
+  } catch (e) {
+    notes.push(`WP Umbrella check failed (${e.message})`);
+  }
+}
+
+// Adds one simple in-stock product to a fresh cart through the WooCommerce Store API (no order is created).
+async function cartTest(base, problems, notes) {
+  const api = `${base}/wp-json/wc/store/v1`;
+  const h = { "user-agent": "siboli-site-monitor/1.0", accept: "application/json" };
+  try {
+    const listRes = await fetch(`${api}/products?per_page=20`, { headers: h, signal: AbortSignal.timeout(15000) });
+    const products = listRes.ok ? await listRes.json() : null;
+    if (!Array.isArray(products)) return void problems.push(`Add-to-cart test: product list failed (HTTP ${listRes.status})`);
+    // Candidates: simple products first, then variations of variable products (clothing stores are mostly variable).
+    const candidates = [];
+    for (const p of products.filter((p) => p.type === "simple" && p.is_purchasable && p.is_in_stock && !p.has_options)) {
+      candidates.push({ id: p.id });
+    }
+    for (const p of products.filter((p) => p.type === "variable" && p.is_purchasable && p.is_in_stock)) {
+      for (const v of p.variations ?? []) {
+        candidates.push({ id: v.id, variation: (v.attributes ?? []).map((a) => ({ attribute: a.name, value: a.value })) });
+      }
+    }
+    if (!candidates.length) return void notes.push("Add-to-cart test skipped (no purchasable product found)");
+
+    const cartRes = await fetch(`${api}/cart`, { headers: h, signal: AbortSignal.timeout(15000) });
+    const token = cartRes.headers.get("cart-token");
+    if (!token) return void notes.push("Add-to-cart test skipped (no Cart-Token)");
+
+    let lastFailure = null;
+    for (const item of candidates.slice(0, 6)) {
+      const start = Date.now();
+      const add = await fetch(`${api}/cart/add-item`, {
+        method: "POST",
+        headers: { ...h, "content-type": "application/json", "cart-token": token },
+        body: JSON.stringify({ ...item, quantity: 1 }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const ms = Date.now() - start;
+      const body = await add.json().catch(() => null);
+      if (add.ok && body?.items_count) {
+        if (ms > SLOW_MS) notes.push(`Add-to-cart slow (${ms}ms)`);
+        return;
+      }
+      lastFailure = { status: add.status, code: body?.code ?? "" };
+    }
+    // Out-of-stock style rejections are not a broken cart; anything else is.
+    if (/stock|purchasable|variation/i.test(lastFailure.code)) notes.push(`Add-to-cart test inconclusive (${lastFailure.code})`);
+    else problems.push(`Add-to-cart failed (HTTP ${lastFailure.status} ${lastFailure.code})`);
+  } catch (e) {
+    problems.push(`Add-to-cart test error (${e.message})`);
+  }
+}
+
 async function checkSite(site) {
   const problems = [];
   const notes = [];
+  const extra = [];
   const home = new URL(site.url);
+  if (site.wpUmbrella) await checkUmbrella(home.hostname, problems, notes, extra);
 
   if (site.maintenance) {
     // Construction mode: 503 is expected. Only flag real outages (network errors, other 5xx) or a site that went live.
@@ -77,7 +165,7 @@ async function checkSite(site) {
     const days = await sslDaysLeft(home.hostname);
     if (days === null) problems.push("SSL check failed");
     else if (days < SSL_WARN_DAYS) problems.push(`SSL expires in ${days} days`);
-    return { site, ms, days, events: null, problems, notes };
+    return { site, ms, days, events: null, extra, problems, notes };
   }
 
   const ms = await checkPage("Homepage", site.url, problems, notes);
@@ -90,6 +178,7 @@ async function checkSite(site) {
     await checkPage("Cart", `${site.url}/cart/`, problems, notes);
     await checkPage("Checkout", `${site.url}/checkout/`, problems, notes);
     await checkPage("Shop API", `${site.url}/wp-json/wc/store/v1/products?per_page=1`, problems, notes);
+    await cartTest(site.url, problems, notes);
   }
 
   let events = null;
@@ -105,7 +194,7 @@ async function checkSite(site) {
       notes.push(`PostHog check failed (${e.message})`);
     }
   }
-  return { site, ms, days, events, problems, notes };
+  return { site, ms, days, events, extra, problems, notes };
 }
 
 function line(r) {
@@ -114,6 +203,7 @@ function line(r) {
   if (r.ms !== null) bits.push(`${r.ms}ms`);
   if (r.days !== null) bits.push(`SSL ${r.days}d`);
   if (r.events !== null) bits.push(`${r.events} events`);
+  bits.push(...r.extra);
   const issues = [...r.problems, ...r.notes].map((p) => `\n   ↳ ${p}`).join("");
   return `${icon} **${r.site.name}** — ${bits.join(" · ")}${issues}`;
 }
@@ -137,4 +227,8 @@ const digest = `**Daily check — ${date}**\n${summary}\n\n${results.map(line).j
 console.log(digest);
 await post(process.env.DISCORD_DIGEST_WEBHOOK, digest);
 if (failed.length) await post(process.env.DISCORD_ALERTS_WEBHOOK, `🚨 **Problems found**\n${failed.map(line).join("\n")}`);
+// Heartbeat: tells UptimeRobot this run completed. If the pings stop, UptimeRobot alerts you.
+if (process.env.HEARTBEAT_URL) {
+  try { await fetch(process.env.HEARTBEAT_URL, { signal: AbortSignal.timeout(10000) }); } catch (e) { console.error(`Heartbeat failed: ${e.message}`); }
+}
 process.exit(failed.length ? 1 : 0);

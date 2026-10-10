@@ -18,6 +18,11 @@ DISCORD_DIGEST_WEBHOOK= node monitor.mjs
 ```
 (prints the digest to the console when no webhook is set)
 
+## Extra checks
+- **Add-to-cart** (`"woocommerce": true`): adds a product to a fresh cart via the Store API. No order is created.
+- **WP Umbrella** (`"wpUmbrella": true`, needs `WP_UMBRELLA_API_KEY`): red if backups keep failing, yellow for latest backup failure, vulnerabilities or a disconnected site; shows pending plugin updates.
+- **Heartbeat** (`HEARTBEAT_URL`): pinged at the end of each run. Create a Heartbeat monitor in UptimeRobot (interval 24h + grace) and use its URL, so you get alerted if the daily run stops.
+
 ## PostHog alerts
 The digest shows events from the last 24h. It only goes red when a site has zero events for `posthogAlertDays` days (default 3, set per site in `sites.json`). Zero in 24h alone is a yellow note.
 
