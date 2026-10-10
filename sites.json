@@ -5,5 +5,5 @@
   { "name": "lamacarena.com", "url": "https://lamacarena.com" },
   { "name": "analindasboutique.com", "url": "https://analindasboutique.com", "woocommerce": true },
   { "name": "mayosstore.com", "url": "https://mayosstore.com", "woocommerce": true, "maintenance": true },
-  { "name": "pomoforte.com", "url": "https://pomoforte.com", "posthogProjectId": "528286" }
+  { "name": "pomoforte.com", "url": "https://pomoforte.com", "posthogProjectId": "528286", "posthogAlertDays": 7 }
 ]

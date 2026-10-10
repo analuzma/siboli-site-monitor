@@ -18,5 +18,8 @@ DISCORD_DIGEST_WEBHOOK= node monitor.mjs
 ```
 (prints the digest to the console when no webhook is set)
 
+## PostHog alerts
+The digest shows events from the last 24h. It only goes red when a site has zero events for `posthogAlertDays` days (default 3, set per site in `sites.json`). Zero in 24h alone is a yellow note.
+
 ## Add a site
 Add an entry to `sites.json`. Use `"woocommerce": true` to also check cart, checkout and the shop API.

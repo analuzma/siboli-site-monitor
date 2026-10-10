@@ -44,15 +44,17 @@ async function checkPage(label, url, problems, notes) {
   }
 }
 
-async function posthogEvents24h(projectId, apiKey) {
+// Returns events in the last 24h plus events in the alert window (default 3 days).
+async function posthogEvents(projectId, apiKey, windowDays) {
   const res = await fetch(`${PH_HOST}/api/projects/${projectId}/query/`, {
     method: "POST",
     signal: AbortSignal.timeout(30000),
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ query: { kind: "HogQLQuery", query: "select count() from events where timestamp > now() - interval 1 day" } }),
+    body: JSON.stringify({ query: { kind: "HogQLQuery", query: `select countIf(timestamp > now() - interval 1 day), count() from events where timestamp > now() - interval ${Number(windowDays)} day` } }),
   });
   if (!res.ok) throw new Error(`PostHog API ${res.status}`);
-  return (await res.json()).results?.[0]?.[0];
+  const [last24h, inWindow] = (await res.json()).results?.[0] ?? [];
+  return { last24h, inWindow };
 }
 
 async function checkSite(site) {
@@ -94,8 +96,11 @@ async function checkSite(site) {
   const phKey = process.env.POSTHOG_API_KEY;
   if (site.posthogProjectId && phKey) {
     try {
-      events = await posthogEvents24h(site.posthogProjectId, phKey);
-      if (!events) problems.push("PostHog: 0 events in last 24h");
+      const windowDays = site.posthogAlertDays ?? 3;
+      const ph = await posthogEvents(site.posthogProjectId, phKey, windowDays);
+      events = ph.last24h;
+      if (!ph.inWindow) problems.push(`PostHog: 0 events in last ${windowDays} days (tracking may be broken)`);
+      else if (!ph.last24h) notes.push("PostHog: no events in last 24h");
     } catch (e) {
       notes.push(`PostHog check failed (${e.message})`);
     }
