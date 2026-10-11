@@ -18,6 +18,12 @@ DISCORD_DIGEST_WEBHOOK= node monitor.mjs
 ```
 (prints the digest to the console when no webhook is set)
 
+## Icons
+- 🔴 needs attention now (site down, backups all failing, SSL close to expiry, broken cart, tracking silent for days). Also posts to the alerts channel.
+- 🟡 to-do, not breaking (vulnerabilities, latest backup failed, slow page, paused/missing UptimeRobot monitor).
+- 🟢 fine. Informational lines (e.g. no PostHog events in 24h) can still appear under a green site.
+- ⚪ maintenance mode (`"maintenance": true`): expected, shown last.
+
 ## Extra checks
 - **Add-to-cart** (`"woocommerce": true`): adds a product to a fresh cart via the Store API. No order is created.
 - **WP Umbrella** (`"wpUmbrella": true`, needs `WP_UMBRELLA_API_KEY`): red if backups keep failing, yellow for latest backup failure, vulnerabilities or a disconnected site; shows pending plugin updates.

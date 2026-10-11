@@ -16,10 +16,10 @@ const SLOW_MS = 3000;
 const SSL_WARN_DAYS = 14;
 const PH_HOST = process.env.POSTHOG_HOST || "https://us.posthog.com";
 
-async function timedFetch(url) {
+async function timedFetch(url, follow = true) {
   const start = Date.now();
   const res = await fetch(url, {
-    redirect: "follow",
+    redirect: follow ? "follow" : "manual",
     signal: AbortSignal.timeout(15000),
     headers: { "user-agent": "siboli-site-monitor/1.0" },
   });
@@ -38,9 +38,9 @@ function sslDaysLeft(hostname) {
   });
 }
 
-async function checkPage(label, url, problems, notes) {
+async function checkPage(label, url, problems, notes, follow = true) {
   try {
-    const { res, ms } = await timedFetch(url);
+    const { res, ms } = await timedFetch(url, follow);
     if (res.status >= 400) problems.push(`${label} returned HTTP ${res.status}`);
     else if (ms > SLOW_MS) notes.push(`${label} slow (${ms}ms)`);
     return ms;
@@ -135,7 +135,7 @@ async function checkUptimeRobot(site, hostname, problems, notes, extra) {
 }
 
 // Adds one simple in-stock product to a fresh cart through the WooCommerce Store API (no order is created).
-async function cartTest(base, problems, notes) {
+async function cartTest(base, problems, notes, info) {
   const api = `${base}/wp-json/wc/store/v1`;
   const h = { "user-agent": "siboli-site-monitor/1.0", accept: "application/json" };
   try {
@@ -152,11 +152,11 @@ async function cartTest(base, problems, notes) {
         candidates.push({ id: v.id, variation: (v.attributes ?? []).map((a) => ({ attribute: a.name, value: a.value })) });
       }
     }
-    if (!candidates.length) return void notes.push("Add-to-cart test skipped (no purchasable product found)");
+    if (!candidates.length) return void info.push("Add-to-cart test skipped (no purchasable product found)");
 
     const cartRes = await fetch(`${api}/cart`, { headers: h, signal: AbortSignal.timeout(15000) });
     const token = cartRes.headers.get("cart-token");
-    if (!token) return void notes.push("Add-to-cart test skipped (no Cart-Token)");
+    if (!token) return void info.push("Add-to-cart test skipped (no Cart-Token)");
 
     let lastFailure = null;
     for (const item of candidates.slice(0, 6)) {
@@ -176,7 +176,7 @@ async function cartTest(base, problems, notes) {
       lastFailure = { status: add.status, code: body?.code ?? "" };
     }
     // Out-of-stock style rejections are not a broken cart; anything else is.
-    if (/stock|purchasable|variation/i.test(lastFailure.code)) notes.push(`Add-to-cart test inconclusive (${lastFailure.code})`);
+    if (/stock|purchasable|variation/i.test(lastFailure.code)) info.push(`Add-to-cart test inconclusive (${lastFailure.code})`);
     else problems.push(`Add-to-cart failed (HTTP ${lastFailure.status} ${lastFailure.code})`);
   } catch (e) {
     problems.push(`Add-to-cart test error (${e.message})`);
@@ -185,7 +185,8 @@ async function cartTest(base, problems, notes) {
 
 async function checkSite(site) {
   const problems = [];
-  const notes = [];
+  const notes = []; // to-dos: turn the site yellow
+  const info = []; // informational: listed, but never change the icon
   const extra = [];
   const home = new URL(site.url);
   if (site.wpUmbrella) await checkUmbrella(home.hostname, problems, notes, extra);
@@ -197,7 +198,7 @@ async function checkSite(site) {
     try {
       const r = await timedFetch(site.url);
       ms = r.ms;
-      if (r.res.status === 503) notes.push("🚧 maintenance mode (expected)");
+      if (r.res.status === 503) info.push("🚧 maintenance mode (expected)");
       else if (r.res.status < 400) notes.push("site is live — remove `maintenance` flag from sites.json");
       else problems.push(`Homepage returned HTTP ${r.res.status}`);
     } catch (e) {
@@ -206,7 +207,7 @@ async function checkSite(site) {
     const days = await sslDaysLeft(home.hostname);
     if (days === null) problems.push("SSL check failed");
     else if (days < SSL_WARN_DAYS) problems.push(`SSL expires in ${days} days`);
-    return { site, ms, days, events: null, extra, problems, notes };
+    return { site, ms, days, events: null, extra, problems, notes, info };
   }
 
   const ms = await checkPage("Homepage", site.url, problems, notes);
@@ -217,9 +218,10 @@ async function checkSite(site) {
 
   if (site.woocommerce) {
     await checkPage("Cart", `${site.url}/cart/`, problems, notes);
-    await checkPage("Checkout", `${site.url}/checkout/`, problems, notes);
+    // Empty cart redirects /checkout/ to the cart: time only the first response (cart is timed separately).
+    await checkPage("Checkout", `${site.url}/checkout/`, problems, notes, false);
     await checkPage("Shop API", `${site.url}/wp-json/wc/store/v1/products?per_page=1`, problems, notes);
-    await cartTest(site.url, problems, notes);
+    await cartTest(site.url, problems, notes, info);
   }
 
   let events = null;
@@ -230,22 +232,22 @@ async function checkSite(site) {
       const ph = await posthogEvents(site.posthogProjectId, phKey, windowDays);
       events = ph.last24h;
       if (!ph.inWindow) problems.push(`PostHog: 0 events in last ${windowDays} days (tracking may be broken)`);
-      else if (!ph.last24h) notes.push("PostHog: no events in last 24h");
+      else if (!ph.last24h) info.push("PostHog: no events in last 24h");
     } catch (e) {
       notes.push(`PostHog check failed (${e.message})`);
     }
   }
-  return { site, ms, days, events, extra, problems, notes };
+  return { site, ms, days, events, extra, problems, notes, info };
 }
 
 function line(r) {
-  const icon = r.problems.length ? "🔴" : r.notes.length ? "🟡" : "🟢";
+  const icon = r.problems.length ? "🔴" : r.site.maintenance ? "⚪" : r.notes.length ? "🟡" : "🟢";
   const bits = [];
   if (r.ms !== null) bits.push(`${r.ms}ms`);
   if (r.days !== null) bits.push(`SSL ${r.days}d`);
   if (r.events !== null) bits.push(`${r.events} events`);
   bits.push(...r.extra);
-  const issues = [...r.problems, ...r.notes].map((p) => `\n   ↳ ${scrub(p).slice(0, 200)}`).join("");
+  const issues = [...r.problems, ...r.notes, ...r.info].map((p) => `\n   ↳ ${scrub(p).slice(0, 200)}`).join("");
   return `${icon} **${r.site.name}** — ${bits.join(" · ")}${issues}`;
 }
 
@@ -271,8 +273,14 @@ async function post(webhook, content, name) {
 
 const results = await Promise.all(sites.map(checkSite));
 const failed = results.filter((r) => r.problems.length);
+const todo = results.filter((r) => !r.problems.length && !r.site.maintenance && r.notes.length);
+// Most urgent first: red, yellow, green, then gray (maintenance).
+const rank = (r) => (r.problems.length ? 0 : r.site.maintenance ? 3 : r.notes.length ? 1 : 2);
+results.sort((a, b) => rank(a) - rank(b));
 const date = new Date().toLocaleDateString("es-MX", { timeZone: "America/Mexico_City" });
-const summary = failed.length ? `⚠️ ${failed.length}/${results.length} sites need attention` : `✅ ${results.length}/${results.length} sites healthy`;
+const summary = failed.length
+  ? `⚠️ ${failed.length}/${results.length} sites need attention`
+  : `✅ All sites are up${todo.length ? ` · 🟡 ${todo.length} with to-dos` : ""}`;
 const digest = `**Daily check — ${date}**\n${summary}\n\n${results.map(line).join("\n")}`;
 
 console.log(digest);
