@@ -5,6 +5,12 @@ import { readFileSync } from "node:fs";
 
 try { process.loadEnvFile(); } catch {} // local runs: read .env if present (Actions uses secrets)
 
+// Secrets pasted with stray whitespace/newlines break headers: keep only the first token.
+const SECRET_VARS = ["DISCORD_DIGEST_WEBHOOK", "DISCORD_ALERTS_WEBHOOK", "POSTHOG_API_KEY", "WP_UMBRELLA_API_KEY", "HEARTBEAT_URL"];
+for (const k of SECRET_VARS) if (process.env[k]) process.env[k] = process.env[k].trim().split(/\s+/)[0];
+// Never let a secret appear in Discord or logs, even inside an error message.
+const scrub = (text) => SECRET_VARS.reduce((t, k) => (process.env[k]?.length > 8 ? t.split(process.env[k]).join("***") : t), String(text));
+
 const sites = JSON.parse(readFileSync(new URL("./sites.json", import.meta.url)));
 const SLOW_MS = 3000;
 const SSL_WARN_DAYS = 14;
@@ -204,7 +210,7 @@ function line(r) {
   if (r.days !== null) bits.push(`SSL ${r.days}d`);
   if (r.events !== null) bits.push(`${r.events} events`);
   bits.push(...r.extra);
-  const issues = [...r.problems, ...r.notes].map((p) => `\n   ↳ ${p}`).join("");
+  const issues = [...r.problems, ...r.notes].map((p) => `\n   ↳ ${scrub(p).slice(0, 200)}`).join("");
   return `${icon} **${r.site.name}** — ${bits.join(" · ")}${issues}`;
 }
 
