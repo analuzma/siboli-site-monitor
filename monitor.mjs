@@ -72,7 +72,8 @@ async function umbrellaProject(hostname, key) {
     });
     if (res.status === 401 || res.status === 403) continue;
     if (!res.ok) throw new Error(`API ${res.status}`);
-    const { projects = [] } = await res.json();
+    const body = await res.json();
+    const projects = Array.isArray(body.data) ? body.data : body.projects ?? [];
     return projects.find((p) => p.source_domain === hostname) ?? null;
   }
   throw new Error("API rejected the key");
