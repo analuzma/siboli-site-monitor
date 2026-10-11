@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 try { process.loadEnvFile(); } catch {} // local runs: read .env if present (Actions uses secrets)
 
 // Secrets pasted with stray whitespace/newlines break headers: keep only the first token.
-const SECRET_VARS = ["DISCORD_DIGEST_WEBHOOK", "DISCORD_ALERTS_WEBHOOK", "POSTHOG_API_KEY", "WP_UMBRELLA_API_KEY", "HEARTBEAT_URL"];
+const SECRET_VARS = ["DISCORD_DIGEST_WEBHOOK", "DISCORD_ALERTS_WEBHOOK", "POSTHOG_API_KEY", "WP_UMBRELLA_API_KEY", "UPTIMEROBOT_API_KEY", "HEARTBEAT_URL"];
 for (const k of SECRET_VARS) if (process.env[k]) process.env[k] = process.env[k].trim().split(/\s+/)[0];
 // Never let a secret appear in Discord or logs, even inside an error message.
 const scrub = (text) => SECRET_VARS.reduce((t, k) => (process.env[k]?.length > 8 ? t.split(process.env[k]).join("***") : t), String(text));
@@ -101,6 +101,39 @@ async function checkUmbrella(hostname, problems, notes, extra) {
   }
 }
 
+// UptimeRobot (read-only key): 24h / 7d uptime per site, plus paused or missing monitors.
+let uptimeRobotCache;
+function uptimeRobotMonitors() {
+  uptimeRobotCache ??= fetch("https://api.uptimerobot.com/v2/getMonitors", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ api_key: process.env.UPTIMEROBOT_API_KEY, format: "json", custom_uptime_ratios: "1-7" }),
+    signal: AbortSignal.timeout(20000),
+  }).then(async (r) => {
+    const j = await r.json();
+    if (j.stat !== "ok") throw new Error(j.error?.message ?? `API ${r.status}`);
+    return j.monitors;
+  });
+  return uptimeRobotCache;
+}
+
+async function checkUptimeRobot(site, hostname, problems, notes, extra) {
+  if (!process.env.UPTIMEROBOT_API_KEY) return;
+  const bare = (h) => h.replace(/^www\./, "");
+  try {
+    const monitors = await uptimeRobotMonitors();
+    const m = monitors.find((m) => { try { return bare(new URL(m.url).hostname) === bare(hostname); } catch { return false; } });
+    if (!m) return void notes.push("No UptimeRobot monitor for this site");
+    if (m.status === 0) return void (site.maintenance || notes.push("UptimeRobot monitor is paused"));
+    if (m.status >= 8) problems.push("UptimeRobot reports the site is down");
+    const [d1, d7] = String(m.custom_uptime_ratio).split("-").map(Number);
+    extra.push(`uptime ${d1}% (24h) · ${d7}% (7d)`);
+    if (d1 < 99.5) notes.push(`UptimeRobot saw downtime in the last 24h (${d1}%)`);
+  } catch (e) {
+    notes.push(`UptimeRobot check failed (${e.message})`);
+  }
+}
+
 // Adds one simple in-stock product to a fresh cart through the WooCommerce Store API (no order is created).
 async function cartTest(base, problems, notes) {
   const api = `${base}/wp-json/wc/store/v1`;
@@ -156,6 +189,7 @@ async function checkSite(site) {
   const extra = [];
   const home = new URL(site.url);
   if (site.wpUmbrella) await checkUmbrella(home.hostname, problems, notes, extra);
+  await checkUptimeRobot(site, home.hostname, problems, notes, extra);
 
   if (site.maintenance) {
     // Construction mode: 503 is expected. Only flag real outages (network errors, other 5xx) or a site that went live.

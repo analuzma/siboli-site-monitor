@@ -21,4 +21,5 @@ jobs:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
           WP_UMBRELLA_API_KEY: ${{ secrets.WP_UMBRELLA_API_KEY }}
+          UPTIMEROBOT_API_KEY: ${{ secrets.UPTIMEROBOT_API_KEY }}
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
