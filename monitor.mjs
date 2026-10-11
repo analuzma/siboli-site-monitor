@@ -208,14 +208,24 @@ function line(r) {
   return `${icon} **${r.site.name}** — ${bits.join(" · ")}${issues}`;
 }
 
-async function post(webhook, content) {
-  if (!webhook) return;
-  const res = await fetch(webhook, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: content.slice(0, 1900) }),
-  });
-  if (!res.ok) console.error(`Discord post failed: ${res.status}`);
+let discordFailed = false;
+async function post(webhook, content, name) {
+  if (!webhook) {
+    // Local dry runs blank the webhooks on purpose; in CI a missing secret must not pass silently.
+    if (process.env.CI) { console.error(`::error::${name} is not set — add it under repo Settings → Secrets → Actions`); discordFailed = true; }
+    return;
+  }
+  try {
+    const res = await fetch(webhook, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: content.slice(0, 1900) }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (e) {
+    console.error(`::error::Discord post to ${name} failed (${e.message}) — check the webhook secret`);
+    discordFailed = true;
+  }
 }
 
 const results = await Promise.all(sites.map(checkSite));
@@ -225,10 +235,10 @@ const summary = failed.length ? `⚠️ ${failed.length}/${results.length} sites
 const digest = `**Daily check — ${date}**\n${summary}\n\n${results.map(line).join("\n")}`;
 
 console.log(digest);
-await post(process.env.DISCORD_DIGEST_WEBHOOK, digest);
-if (failed.length) await post(process.env.DISCORD_ALERTS_WEBHOOK, `🚨 **Problems found**\n${failed.map(line).join("\n")}`);
+await post(process.env.DISCORD_DIGEST_WEBHOOK, digest, "DISCORD_DIGEST_WEBHOOK");
+if (failed.length) await post(process.env.DISCORD_ALERTS_WEBHOOK, `🚨 **Problems found**\n${failed.map(line).join("\n")}`, "DISCORD_ALERTS_WEBHOOK");
 // Heartbeat: tells UptimeRobot this run completed. If the pings stop, UptimeRobot alerts you.
 if (process.env.HEARTBEAT_URL) {
   try { await fetch(process.env.HEARTBEAT_URL, { signal: AbortSignal.timeout(10000) }); } catch (e) { console.error(`Heartbeat failed: ${e.message}`); }
 }
-process.exit(failed.length ? 1 : 0);
+process.exit(failed.length || discordFailed ? 1 : 0);
